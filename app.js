@@ -126,8 +126,25 @@ function processResistor(frame) {
                 new cv.Point(rect.x + rect.width, rect.y + rect.height),
                 new cv.Scalar(0, 255, 0, 255), 2);
             
-            // TODO: Implement color band detection and value calculation
-            // This would involve analyzing the colors within the detected rectangle
+            // Extract the region of interest (ROI)
+            let roi = frame.roi(rect);
+            
+            // Convert to HSV for better color detection
+            let hsv = new cv.Mat();
+            cv.cvtColor(roi, hsv, cv.COLOR_RGBA2HSV);
+            
+            // Detect color bands
+            let bands = detectColorBands(hsv);
+            
+            // Calculate resistor value
+            if (bands.length >= 3) {
+                let value = calculateResistorValue(bands);
+                resistorValue.textContent = value;
+            }
+            
+            // Clean up ROI processing
+            roi.delete();
+            hsv.delete();
         }
     }
 
@@ -137,6 +154,86 @@ function processResistor(frame) {
     edges.delete();
     contours.delete();
     hierarchy.delete();
+}
+
+function detectColorBands(hsv) {
+    let bands = [];
+    let width = hsv.cols;
+    let height = hsv.rows;
+    
+    // Sample points along the resistor
+    let samplePoints = 10;
+    let step = width / (samplePoints + 1);
+    
+    for (let i = 1; i <= samplePoints; i++) {
+        let x = Math.floor(i * step);
+        let color = getDominantColor(hsv, x, height/2);
+        if (color) {
+            bands.push(color);
+        }
+    }
+    
+    return bands;
+}
+
+function getDominantColor(hsv, x, y) {
+    // Sample a small region around the point
+    let region = hsv.roi(new cv.Rect(x-5, y-5, 10, 10));
+    let mean = new cv.Mat();
+    cv.mean(region, mean);
+    
+    // Convert HSV to color name
+    let h = mean.data[0];
+    let s = mean.data[1];
+    let v = mean.data[2];
+    
+    let color = hsvToColorName(h, s, v);
+    
+    region.delete();
+    mean.delete();
+    
+    return color;
+}
+
+function hsvToColorName(h, s, v) {
+    // HSV ranges for different colors
+    if (v < 50) return 'black';
+    if (v > 200 && s < 50) return 'white';
+    
+    if (h >= 0 && h < 30) return 'red';
+    if (h >= 30 && h < 60) return 'orange';
+    if (h >= 60 && h < 90) return 'yellow';
+    if (h >= 90 && h < 150) return 'green';
+    if (h >= 150 && h < 210) return 'blue';
+    if (h >= 210 && h < 270) return 'violet';
+    if (h >= 270 && h < 330) return 'red';
+    if (h >= 330 && h < 360) return 'red';
+    
+    return null;
+}
+
+function calculateResistorValue(bands) {
+    if (bands.length < 3) return 'Invalid';
+    
+    let value = '';
+    for (let i = 0; i < bands.length - 1; i++) {
+        if (colorBands[bands[i]] !== undefined) {
+            value += colorBands[bands[i]];
+        }
+    }
+    
+    // Add multiplier (last band)
+    let multiplier = Math.pow(10, colorBands[bands[bands.length - 1]] || 0);
+    let finalValue = parseInt(value) * multiplier;
+    
+    // Format the value with appropriate units
+    if (finalValue >= 1000000) {
+        return (finalValue / 1000000) + 'MΩ';
+    } else if (finalValue >= 1000) {
+        return (finalValue / 1000) + 'kΩ';
+    } else {
+        return finalValue + 'Ω';
+    }
 }
 
 // Event listeners
