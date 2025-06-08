@@ -6,6 +6,7 @@ let zoomSlider = document.getElementById('zoomSlider');
 let resistorValue = document.getElementById('resistorValue');
 let stream = null;
 let processing = false;
+let currentZoom = 1;
 
 // Color bands and their corresponding values
 const colorBands = {
@@ -39,7 +40,13 @@ async function startCamera() {
         startButton.disabled = true;
         stopButton.disabled = false;
         processing = true;
-        processVideo();
+        
+        // Wait for video to be ready
+        video.onloadedmetadata = () => {
+            canvasOutput.width = video.videoWidth;
+            canvasOutput.height = video.videoHeight;
+            processVideo();
+        };
     } catch (err) {
         console.error('Error accessing camera:', err);
         alert('Error accessing camera. Please make sure you have granted camera permissions.');
@@ -74,7 +81,8 @@ function processVideo() {
         
         // Apply zoom
         let zoom = parseFloat(zoomSlider.value);
-        if (zoom !== 1) {
+        if (zoom !== currentZoom) {
+            currentZoom = zoom;
             let center = new cv.Point(src.cols / 2, src.rows / 2);
             let matrix = cv.getRotationMatrix2D(center, 0, zoom);
             cv.warpAffine(src, dst, matrix, new cv.Size(src.cols, src.rows));
@@ -96,36 +104,50 @@ function processVideo() {
 }
 
 function processResistor(frame) {
-    // Convert to grayscale
-    let gray = new cv.Mat();
-    cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+    try {
+        // Convert to grayscale
+        let gray = new cv.Mat();
+        cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
 
-    // Apply Gaussian blur
-    let blurred = new cv.Mat();
-    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+        // Apply Gaussian blur
+        let blurred = new cv.Mat();
+        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
 
-    // Edge detection
-    let edges = new cv.Mat();
-    cv.Canny(blurred, edges, 50, 150);
+        // Edge detection with adjusted thresholds
+        let edges = new cv.Mat();
+        cv.Canny(blurred, edges, 30, 100);
 
-    // Find contours
-    let contours = new cv.MatVector();
-    let hierarchy = new cv.Mat();
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        // Find contours
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-    // Process contours to find potential resistors
-    for (let i = 0; i < contours.size(); i++) {
-        let contour = contours.get(i);
-        let area = cv.contourArea(contour);
-        
-        // Filter based on area to find potential resistors
-        if (area > 1000) {
-            let rect = cv.boundingRect(contour);
+        let maxArea = 0;
+        let bestContour = null;
+
+        // Find the largest contour that could be a resistor
+        for (let i = 0; i < contours.size(); i++) {
+            let contour = contours.get(i);
+            let area = cv.contourArea(contour);
+            
+            // Adjust these thresholds based on your needs
+            if (area > 1000 && area < 50000) {
+                if (area > maxArea) {
+                    maxArea = area;
+                    bestContour = contour;
+                }
+            }
+        }
+
+        if (bestContour) {
+            let rect = cv.boundingRect(bestContour);
+            
             // Draw rectangle around potential resistor
-            cv.rectangle(frame, new cv.Point(rect.x, rect.y),
+            cv.rectangle(frame, 
+                new cv.Point(rect.x, rect.y),
                 new cv.Point(rect.x + rect.width, rect.y + rect.height),
                 new cv.Scalar(0, 255, 0, 255), 2);
-            
+
             // Extract the region of interest (ROI)
             let roi = frame.roi(rect);
             
@@ -140,20 +162,27 @@ function processResistor(frame) {
             if (bands.length >= 3) {
                 let value = calculateResistorValue(bands);
                 resistorValue.textContent = value;
+            } else {
+                resistorValue.textContent = 'No resistor detected';
             }
             
             // Clean up ROI processing
             roi.delete();
             hsv.delete();
+        } else {
+            resistorValue.textContent = 'No resistor detected';
         }
-    }
 
-    // Clean up
-    gray.delete();
-    blurred.delete();
-    edges.delete();
-    contours.delete();
-    hierarchy.delete();
+        // Clean up
+        gray.delete();
+        blurred.delete();
+        edges.delete();
+        contours.delete();
+        hierarchy.delete();
+    } catch (err) {
+        console.error('Error processing frame:', err);
+        resistorValue.textContent = 'Error processing image';
+    }
 }
 
 function detectColorBands(hsv) {
@@ -177,22 +206,27 @@ function detectColorBands(hsv) {
 }
 
 function getDominantColor(hsv, x, y) {
-    // Sample a small region around the point
-    let region = hsv.roi(new cv.Rect(x-5, y-5, 10, 10));
-    let mean = new cv.Mat();
-    cv.mean(region, mean);
-    
-    // Convert HSV to color name
-    let h = mean.data[0];
-    let s = mean.data[1];
-    let v = mean.data[2];
-    
-    let color = hsvToColorName(h, s, v);
-    
-    region.delete();
-    mean.delete();
-    
-    return color;
+    try {
+        // Sample a small region around the point
+        let region = hsv.roi(new cv.Rect(x-5, y-5, 10, 10));
+        let mean = new cv.Mat();
+        cv.mean(region, mean);
+        
+        // Convert HSV to color name
+        let h = mean.data[0];
+        let s = mean.data[1];
+        let v = mean.data[2];
+        
+        let color = hsvToColorName(h, s, v);
+        
+        region.delete();
+        mean.delete();
+        
+        return color;
+    } catch (err) {
+        console.error('Error getting dominant color:', err);
+        return null;
+    }
 }
 
 function hsvToColorName(h, s, v) {
